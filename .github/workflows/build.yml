@@ -142,10 +142,11 @@ jobs:
           -DNCNN_VULKAN=ON -DNCNN_SHARED_LIB=ON `
           -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF `
           -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_BENCHMARK=OFF `
-          -DCMAKE_INSTALL_PREFIX=install
+          -DCMAKE_INSTALL_PREFIX="$PWD\install"
         cmake --build build --config Release -j 4
         cmake --install build --config Release
-        Compress-Archive -Path build/install/* -DestinationPath ncnn-vulkan-shared-${{ matrix.label }}.zip
+        if (!(Test-Path install)) { throw "install directory not found" }
+        Get-ChildItem install | Compress-Archive -DestinationPath ncnn-vulkan-shared-${{ matrix.label }}.zip
 
     - name: Build ncnn vulkan shared sdk (linux)
       if: matrix.plat == 'linux'
