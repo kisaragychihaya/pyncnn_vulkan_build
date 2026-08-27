@@ -69,8 +69,8 @@ jobs:
       env:
         CIBW_ARCHS_WINDOWS: ${{ matrix.arch }}
         CIBW_BUILD_VERBOSITY: 1
-        CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
-        CIBW_BEFORE_BUILD: pip install delvewheel
+        CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 CMAKE_GENERATOR=Ninja EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
+        CIBW_BEFORE_BUILD: pip install ninja delvewheel
         CIBW_REPAIR_WHEEL_COMMAND: >
           python -c "import zipfile; z=zipfile.ZipFile('{wheel}'); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" &&
           delvewheel repair -w {dest_dir} {wheel}
@@ -84,8 +84,8 @@ jobs:
       env:
         CIBW_ARCHS_WINDOWS: ${{ matrix.arch }}
         CIBW_BUILD_VERBOSITY: 1
-        CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
-        CIBW_BEFORE_BUILD: pip install delvewheel
+        CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 CMAKE_GENERATOR=Ninja EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
+        CIBW_BEFORE_BUILD: pip install ninja delvewheel
         CIBW_REPAIR_WHEEL_COMMAND: >
           python -c "import zipfile; z=zipfile.ZipFile('{wheel}'); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" &&
           delvewheel repair -w {dest_dir} {wheel} --no-dll "msvcp140.dll;vcomp140.dll"
@@ -99,7 +99,8 @@ jobs:
       env:
         CIBW_ARCHS_LINUX: ${{ matrix.arch }}
         CIBW_BUILD_VERBOSITY: 1
-        CIBW_ENVIRONMENT: CMAKE_BUILD_PARALLEL_LEVEL=4 EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
+        CIBW_BEFORE_BUILD: pip install ninja
+        CIBW_ENVIRONMENT: CMAKE_BUILD_PARALLEL_LEVEL=4 CMAKE_GENERATOR=Ninja EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
 
     # cmake creates libncnn.so / libncnn.so.1 -> libncnn.so.1.0.<date> symlinks
     # and the wheel build dereferences them into 3 full copies; keep only
