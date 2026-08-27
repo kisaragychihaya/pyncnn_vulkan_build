@@ -53,10 +53,19 @@ def main():
             dll_candidates = glob.glob(
                 os.path.join(self.build_temp, "**", "ncnn.dll"), recursive=True
             )
+            # CMake may already have placed ncnn.dll directly in extdir via
+            # CMAKE_RUNTIME_OUTPUT_DIRECTORY; setuptools will then copy it into
+            # the wheel.  Fall back to the build tree only if it is not there.
+            ext_dll = os.path.join(extdir, "ncnn.dll")
+            if not dll_candidates and os.path.exists(ext_dll):
+                dll_candidates = [ext_dll]
             if dll_candidates:
                 for dll in dll_candidates:
-                    shutil.copy2(dll, extdir)
-                    print("copied ncnn.dll to", extdir, "from", dll)
+                    if os.path.abspath(dll) != os.path.abspath(ext_dll):
+                        shutil.copy2(dll, extdir)
+                        print("copied ncnn.dll to", extdir, "from", dll)
+                    else:
+                        print("ncnn.dll already at", extdir)
             else:
                 print("WARNING: ncnn.dll not found under", self.build_temp)''',
     )

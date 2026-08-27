@@ -82,7 +82,7 @@ jobs:
         CIBW_BEFORE_BUILD: pip install ninja delvewheel
         CIBW_REPAIR_WHEEL_COMMAND: >
           python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" {wheel} &&
-          delvewheel repair -w {dest_dir} {wheel}
+          delvewheel repair -w {dest_dir} {wheel} --no-dll "ncnn.dll"
 
     - name: Build wheels (windows-arm64)
       if: matrix.plat == 'windows' && matrix.arch == 'ARM64'
@@ -97,7 +97,7 @@ jobs:
         CIBW_BEFORE_BUILD: pip install ninja delvewheel
         CIBW_REPAIR_WHEEL_COMMAND: >
           python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" {wheel} &&
-          delvewheel repair -w {dest_dir} {wheel} --no-dll "msvcp140.dll;vcomp140.dll"
+          delvewheel repair -w {dest_dir} {wheel} --no-dll "ncnn.dll;msvcp140.dll;vcomp140.dll"
 
     - name: Build wheels (linux)
       if: matrix.plat == 'linux'
