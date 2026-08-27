@@ -32,8 +32,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-2025,     arch: AMD64,   plat: windows, label: windows-amd64 }
-          - { os: windows-11-arm,   arch: ARM64,   plat: windows, label: windows-arm64 }
+          - { os: windows-2025,     arch: AMD64,   vs_arch: x64,   plat: windows, label: windows-amd64 }
+          - { os: windows-11-arm,   arch: ARM64,   vs_arch: arm64, plat: windows, label: windows-arm64 }
           - { os: ubuntu-24.04,     arch: x86_64,  plat: linux,   label: linux-amd64 }
           - { os: ubuntu-24.04-arm, arch: aarch64, plat: linux,   label: linux-arm64 }
 
@@ -59,6 +59,15 @@ jobs:
     # inside the wheel (linux already works via CMAKE_LIBRARY_OUTPUT_DIRECTORY)
     - name: Patch ncnn setup.py for shared lib packaging
       run: python build-tools/tools/patch_setup.py ncnn/setup.py
+
+    # With CMAKE_GENERATOR=Ninja, CMake picks the first compiler on PATH.
+    # On the Windows runners that is MinGW x86_64 GCC, which cannot link
+    # against the MSVC-built Python libs.  Initialize MSVC first.
+    - name: Setup MSVC
+      if: matrix.plat == 'windows'
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.vs_arch }}
 
     - name: Build wheels (windows-amd64)
       if: matrix.plat == 'windows' && matrix.arch == 'AMD64'
