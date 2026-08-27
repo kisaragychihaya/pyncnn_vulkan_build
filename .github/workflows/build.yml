@@ -81,7 +81,7 @@ jobs:
         CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 CMAKE_GENERATOR=Ninja EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
         CIBW_BEFORE_BUILD: pip install ninja delvewheel
         CIBW_REPAIR_WHEEL_COMMAND: >
-          python -c "import zipfile; z=zipfile.ZipFile('{wheel}'); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" &&
+          python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" {wheel} &&
           delvewheel repair -w {dest_dir} {wheel}
 
     - name: Build wheels (windows-arm64)
@@ -96,7 +96,7 @@ jobs:
         CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 CMAKE_GENERATOR=Ninja EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
         CIBW_BEFORE_BUILD: pip install ninja delvewheel
         CIBW_REPAIR_WHEEL_COMMAND: >
-          python -c "import zipfile; z=zipfile.ZipFile('{wheel}'); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" &&
+          python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print('--- wheel contents ---'); [print(n) for n in z.namelist() if 'ncnn' in n.lower() or n.endswith('.dll') or n.endswith('.pyd')]" {wheel} &&
           delvewheel repair -w {dest_dir} {wheel} --no-dll "msvcp140.dll;vcomp140.dll"
 
     - name: Build wheels (linux)
