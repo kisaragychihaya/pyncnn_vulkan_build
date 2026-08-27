@@ -134,24 +134,36 @@ jobs:
         path: ncnn
         submodules: true
 
+    - uses: ilammy/msvc-dev-cmd@v1
+      if: matrix.plat == 'windows'
+      with:
+        arch: ${{ matrix.vs_arch }}
+
+    - name: Install ninja-build (linux)
+      if: matrix.plat == 'linux'
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y ninja-build
+
     - name: Build ncnn vulkan shared sdk (windows)
       if: matrix.plat == 'windows'
       shell: pwsh
       run: |
-        cmake -S ncnn -B build -A ${{ matrix.vs_arch }} `
+        cmake -S ncnn -B build -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release `
           -DNCNN_VULKAN=ON -DNCNN_SHARED_LIB=ON `
           -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF `
           -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_BENCHMARK=OFF `
           -DCMAKE_INSTALL_PREFIX="$PWD\install"
-        cmake --build build --config Release -j 4
-        cmake --install build --config Release
+        cmake --build build -j 4
+        cmake --install build
         if (!(Test-Path install)) { throw "install directory not found" }
         Get-ChildItem install | Compress-Archive -DestinationPath ncnn-vulkan-shared-${{ matrix.label }}.zip
 
     - name: Build ncnn vulkan shared sdk (linux)
       if: matrix.plat == 'linux'
       run: |
-        cmake -S ncnn -B build -DCMAKE_BUILD_TYPE=Release \
+        cmake -S ncnn -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
           -DNCNN_VULKAN=ON -DNCNN_SHARED_LIB=ON \
           -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
           -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_BENCHMARK=OFF \
