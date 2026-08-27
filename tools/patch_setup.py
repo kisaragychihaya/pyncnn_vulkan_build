@@ -36,6 +36,31 @@ def main():
         "                ]",
     )
 
+    # 3. After the CMake build finishes, copy ncnn.dll next to the extension
+    # module on Windows.  CMAKE_RUNTIME_OUTPUT_DIRECTORY is not always honoured
+    # (e.g. target-level properties or multi-config generators may override it),
+    # so an explicit copy guarantees the DLL is inside the un-repaired wheel.
+    build_anchor = '''        subprocess.check_call(
+            ["cmake", "--build", "."] + build_args, cwd=self.build_temp
+        )'''
+    assert src.count(build_anchor) == 1, "build anchor not found, ncnn setup.py changed?"
+    src = src.replace(
+        build_anchor,
+        build_anchor + '''\n
+        # Package the ncnn shared library (RUNTIME artifact on Windows).
+        if sys.platform == "win32":
+            import glob
+            dll_candidates = glob.glob(
+                os.path.join(self.build_temp, "**", "ncnn.dll"), recursive=True
+            )
+            if dll_candidates:
+                for dll in dll_candidates:
+                    shutil.copy2(dll, extdir)
+                    print("copied ncnn.dll to", extdir, "from", dll)
+            else:
+                print("WARNING: ncnn.dll not found under", self.build_temp)''',
+    )
+
     with open(path, "w", encoding="utf8", newline="") as f:
         f.write(src)
     print("patched", path)
