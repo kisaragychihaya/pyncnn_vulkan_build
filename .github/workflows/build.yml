@@ -1,0 +1,186 @@
+name: pyncnn-vulkan-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ncnn_ref:
+        description: ncnn git ref (tag / branch / commit)
+        required: false
+        default: master
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pyncnn-vulkan-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NCNN_REF: ${{ inputs.ncnn_ref || 'master' }}
+  # python 3.10 - 3.14, skip free-threaded builds (cp313t / cp314t)
+  CIBW_BUILD: 'cp310-* cp311-* cp312-* cp313-* cp314-*'
+  CIBW_SKIP: 'cp3??t-*'
+
+jobs:
+  wheels:
+    name: wheel ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025,     arch: AMD64,   plat: windows, label: windows-amd64 }
+          - { os: windows-11-arm,   arch: ARM64,   plat: windows, label: windows-arm64 }
+          - { os: ubuntu-24.04,     arch: x86_64,  plat: linux,   label: linux-amd64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64, plat: linux,   label: linux-arm64 }
+
+    steps:
+    # this repo (patch / post-process tools)
+    - uses: actions/checkout@v4
+      with:
+        path: build-tools
+
+    # ncnn source with glslang + pybind11 submodules
+    - uses: actions/checkout@v4
+      with:
+        repository: Tencent/ncnn
+        ref: ${{ env.NCNN_REF }}
+        path: ncnn
+        submodules: true
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    # let ncnn.dll land next to the extension module so it gets shipped
+    # inside the wheel (linux already works via CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+    - name: Patch ncnn setup.py for shared lib packaging
+      run: python build-tools/tools/patch_setup.py ncnn/setup.py
+
+    - name: Build wheels (windows-amd64)
+      if: matrix.plat == 'windows' && matrix.arch == 'AMD64'
+      uses: pypa/cibuildwheel@v3.4.1
+      with:
+        package-dir: ncnn
+        output-dir: wheelhouse
+      env:
+        CIBW_ARCHS_WINDOWS: ${{ matrix.arch }}
+        CIBW_BUILD_VERBOSITY: 1
+        CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
+        CIBW_BEFORE_BUILD: pip install delvewheel
+        CIBW_REPAIR_WHEEL_COMMAND: delvewheel repair -w {dest_dir} {wheel}
+
+    - name: Build wheels (windows-arm64)
+      if: matrix.plat == 'windows' && matrix.arch == 'ARM64'
+      uses: pypa/cibuildwheel@v3.4.1
+      with:
+        package-dir: ncnn
+        output-dir: wheelhouse
+      env:
+        CIBW_ARCHS_WINDOWS: ${{ matrix.arch }}
+        CIBW_BUILD_VERBOSITY: 1
+        CIBW_ENVIRONMENT_WINDOWS: CMAKE_BUILD_PARALLEL_LEVEL=4 EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
+        CIBW_BEFORE_BUILD: pip install delvewheel
+        CIBW_REPAIR_WHEEL_COMMAND: delvewheel repair -w {dest_dir} {wheel} --no-dll "msvcp140.dll;vcomp140.dll"
+
+    - name: Build wheels (linux)
+      if: matrix.plat == 'linux'
+      uses: pypa/cibuildwheel@v3.4.1
+      with:
+        package-dir: ncnn
+        output-dir: wheelhouse
+      env:
+        CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+        CIBW_BUILD_VERBOSITY: 1
+        CIBW_ENVIRONMENT: CMAKE_BUILD_PARALLEL_LEVEL=4 EXTRA_CMAKE_ARGS="-DNCNN_SHARED_LIB=ON"
+
+    # cmake creates libncnn.so / libncnn.so.1 -> libncnn.so.1.0.<date> symlinks
+    # and the wheel build dereferences them into 3 full copies; keep only
+    # libncnn.so.1 (the SONAME the extension module links against)
+    - name: Deduplicate libncnn copies in linux wheels
+      if: matrix.plat == 'linux'
+      run: python build-tools/tools/dedup_wheel.py wheelhouse/*.whl
+
+    - name: Show files
+      run: ls -lh wheelhouse
+      shell: bash
+
+    - name: Upload wheels
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.label }}
+        path: wheelhouse/*.whl
+
+  sdk:
+    name: sdk ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025,     vs_arch: x64,   plat: windows, label: windows-amd64 }
+          - { os: windows-11-arm,   vs_arch: arm64, plat: windows, label: windows-arm64 }
+          - { os: ubuntu-24.04,     plat: linux,    label: linux-amd64 }
+          - { os: ubuntu-24.04-arm, plat: linux,    label: linux-arm64 }
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: Tencent/ncnn
+        ref: ${{ env.NCNN_REF }}
+        path: ncnn
+        submodules: true
+
+    - name: Build ncnn vulkan shared sdk (windows)
+      if: matrix.plat == 'windows'
+      shell: pwsh
+      run: |
+        cmake -S ncnn -B build -A ${{ matrix.vs_arch }} `
+          -DNCNN_VULKAN=ON -DNCNN_SHARED_LIB=ON `
+          -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF `
+          -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_BENCHMARK=OFF `
+          -DCMAKE_INSTALL_PREFIX=install
+        cmake --build build --config Release -j 4
+        cmake --install build --config Release
+        Compress-Archive -Path build/install/* -DestinationPath ncnn-vulkan-shared-${{ matrix.label }}.zip
+
+    - name: Build ncnn vulkan shared sdk (linux)
+      if: matrix.plat == 'linux'
+      run: |
+        cmake -S ncnn -B build -DCMAKE_BUILD_TYPE=Release \
+          -DNCNN_VULKAN=ON -DNCNN_SHARED_LIB=ON \
+          -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
+          -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_BENCHMARK=OFF \
+          -DCMAKE_INSTALL_PREFIX=$PWD/install
+        cmake --build build -j $(nproc)
+        cmake --install build
+        tar czf ncnn-vulkan-shared-${{ matrix.label }}.tar.gz -C install .
+
+    - name: Upload sdk
+      uses: actions/upload-artifact@v4
+      with:
+        name: sdk-${{ matrix.label }}
+        path: |
+          ncnn-vulkan-shared-*.zip
+          ncnn-vulkan-shared-*.tar.gz
+
+  release:
+    name: github release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [wheels, sdk]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: dist
+        merge-multiple: true
+
+    - name: Show files
+      run: ls -lh dist
+
+    - uses: softprops/action-gh-release@v2
+      with:
+        files: dist/*
