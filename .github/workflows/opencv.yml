@@ -1,0 +1,64 @@
+name: opencv-win32-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      opencv_ref:
+        description: opencv git ref (tag / branch / commit)
+        required: false
+        default: master
+
+concurrency:
+  group: opencv-win32-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENCV_REF: ${{ inputs.opencv_ref || 'master' }}
+
+jobs:
+  sdk:
+    name: opencv sdk windows-win32
+    runs-on: windows-2025
+
+    steps:
+    # opencv + opencv_contrib must be checked out at the same ref
+    - uses: actions/checkout@v4
+      with:
+        repository: opencv/opencv
+        ref: ${{ env.OPENCV_REF }}
+        path: opencv
+
+    - uses: actions/checkout@v4
+      with:
+        repository: opencv/opencv_contrib
+        ref: ${{ env.OPENCV_REF }}
+        path: opencv_contrib
+
+    # 32-bit build: initialize the MSVC x86 toolchain before cmake so the
+    # Ninja generator picks the right compiler
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x86
+
+    - name: Build opencv 32bit with contrib modules
+      shell: pwsh
+      run: |
+        cmake -S opencv -B build -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DOPENCV_EXTRA_MODULES_PATH="$PWD\opencv_contrib\modules" `
+          -DBUILD_opencv_apps=OFF -DBUILD_EXAMPLES=OFF `
+          -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_opencv_python_tests=OFF `
+          -DBUILD_opencv_java=OFF -DBUILD_opencv_js=OFF `
+          -DBUILD_opencv_python3=OFF -DBUILD_opencv_python_bindings_generator=OFF `
+          -DBUILD_DOCS=OFF -DBUILD_PACKAGE=OFF `
+          -DCMAKE_INSTALL_PREFIX="$PWD\install"
+        cmake --build build -j 4
+        cmake --install build
+        if (!(Test-Path install)) { throw "install directory not found" }
+        Get-ChildItem install | Compress-Archive -DestinationPath opencv-contrib-win32.zip
+
+    - name: Upload sdk
+      uses: actions/upload-artifact@v4
+      with:
+        name: sdk-opencv-windows-win32
+        path: opencv-contrib-win32.zip

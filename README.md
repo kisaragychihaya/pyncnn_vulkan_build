@@ -34,3 +34,15 @@ cp313t/cp314t），以及对应平台的 ncnn SDK 包（动态库 + 头文件 + 
     `tools/dedup_wheel.py` 只保留扩展模块实际链接的 `libncnn.so.1` 并刷新 `RECORD`。
 - 官方 ncnn CI（`.github/workflows/release-python.yml`）已验证 windows-11-arm 可构建
   cp310–cp314 的 win_arm64 wheel，本仓库矩阵与其保持一致。
+
+## OpenCV win32 SDK
+
+`opencv-win32-build` workflow（`.github/workflows/opencv.yml`）编译 OpenCV **32 位 Windows**
+版（windows-2025 + MSVC x86），启用 opencv_contrib extra modules
+（`OPENCV_EXTRA_MODULES_PATH`），关闭 apps / tests / perf-tests / docs，以及 Java(JNI) /
+JS / Python 绑定，只保留 C/C++ API。
+
+- Actions 页面手动运行，可通过 `opencv_ref` 输入指定 opencv 与 opencv_contrib 的
+  tag / branch / commit（默认 `master`，两个仓库使用同一 ref 以保证版本一致）。
+- `cmake --install` 的结果打包为 `opencv-contrib-win32.zip`，上传为
+  `sdk-opencv-windows-win32` artifact（仅 Actions 存储，不随 Release 发布）。
