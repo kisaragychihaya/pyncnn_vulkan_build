@@ -61,7 +61,9 @@ JS / Python 绑定，只保留 C/C++ API。
 - **先跑 `smoke` 门禁**（yolov8n）：断言 `ncnn.get_gpu_count() > 0` 并完成一次 Vulkan 推理，
   通过后才并行跑全量矩阵，避免拿一堆"CPU 回退"的假绿出报告。
 - 判定分四段：`export`（ultralytics 导出）、`load`（pyncnn 加载）、`vulkan`（网络确实绑定到
-  设备、未回退 CPU）、`inference`（推理且与 CPU 输出相对误差 < 1%）。
+  设备、未回退 CPU）、`inference`（推理成功，且 **fp32** 下 Vulkan 与 CPU 相对误差 < 0.1%）。
+  Vulkan 默认走 fp16 kernel，fp16 舍入本身就会带来百分之几的偏差，所以判定用关掉 fp16 的
+  fp32 对比；fp16 的偏差作为参考列一起报出。
 - 报告写入 job summary，并作为 `model-compat-report` artifact 上传。
 
 注意两个已验证的坑：ncnn 的 `Mat` 只接受 **CHW** 输入（HWC 会让 `extract()` 段错误而不是抛异常）；

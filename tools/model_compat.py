@@ -102,12 +102,23 @@ def collect_gpus(rec: Recorder) -> list[str]:
     return names
 
 
-def build_net(ncnn, param: Path, model: Path, use_vulkan: bool, device_index: int | None):
-    """Load a net, then verify Vulkan is genuinely active when it was requested."""
+def build_net(ncnn, param: Path, model: Path, use_vulkan: bool, device_index: int | None, fp16: bool = True):
+    """Load a net, then verify Vulkan is genuinely active when it was requested.
+
+    ``fp16`` must be applied before ``load_param``: ncnn decides kernel variants
+    while parsing the graph, so flipping the option afterwards yields garbage.
+    """
     net = ncnn.Net()
     net.opt.use_vulkan_compute = use_vulkan
     if use_vulkan and device_index is not None:
         net.set_vulkan_device(device_index)
+    if use_vulkan and not fp16:
+        # ncnn enables fp16 kernels by default on Vulkan.  Disabling them lets
+        # the same net be compared to CPU exactly, which distinguishes "fp16
+        # rounding" from "the Vulkan kernel is wrong".
+        net.opt.use_fp16_packed = False
+        net.opt.use_fp16_storage = False
+        net.opt.use_fp16_arithmetic = False
     net.load_param(str(param))
     net.load_model(str(model))
     if use_vulkan:
@@ -119,11 +130,20 @@ def build_net(ncnn, param: Path, model: Path, use_vulkan: bool, device_index: in
     return net
 
 
-def forward(ncnn, param: Path, model: Path, device_index: int | None, size: int, use_vulkan: bool, runs: int):
+def forward(
+    ncnn,
+    param: Path,
+    model: Path,
+    device_index: int | None,
+    size: int,
+    use_vulkan: bool,
+    runs: int,
+    fp16: bool = True,
+):
     """Run a few forward passes and return outputs plus median latency in ms."""
     import numpy as np
 
-    net = build_net(ncnn, param, model, use_vulkan, device_index)
+    net = build_net(ncnn, param, model, use_vulkan, device_index, fp16=fp16)
     # ncnn Mat expects CHW.  Feeding HWC makes extract() segfault instead of
     # raising, so getting this shape right is load-bearing.
     data = np.random.RandomState(0).rand(3, size, size).astype(np.float32)
@@ -193,35 +213,52 @@ def inference_child(args: argparse.Namespace) -> int:
 
     param = Path(args.param)
     binary = Path(args.bin)
-    vk_mats, vk_ms = forward(ncnn, param, binary, args.device, args.imgsz, True, 3)
     cpu_mats, cpu_ms = forward(ncnn, param, binary, args.device, args.imgsz, False, 3)
 
-    payload = {
-        "output_shapes": [list(m.shape) for m in vk_mats],
-        "timing": {"vulkan_ms_median": round(vk_ms, 2), "cpu_ms_median": round(cpu_ms, 2)},
-    }
-    # Compare against the magnitude of the CPU output: Vulkan runs fp16 kernels,
-    # so a raw absolute epsilon would flag every model.  NaN/inf are still fatal.
-    max_diff = 0.0
-    scale = 1e-9
-    non_finite = 0
-    for a, b in zip(vk_mats, cpu_mats):
-        if a.shape != b.shape:
-            raise RuntimeError(f"Vulkan output shape {a.shape} != CPU output shape {b.shape}")
-        if not a.size:
-            continue
-        a64 = a.astype(np.float64)
-        b64 = b.astype(np.float64)
-        non_finite += int(np.count_nonzero(~np.isfinite(a64)))
-        max_diff = max(max_diff, float(np.max(np.abs(a64 - b64))))
-        scale = max(scale, float(np.max(np.abs(b64))))
-    rel_diff = max_diff / scale
-    payload["vulkan_cpu_max_abs_diff"] = round(max_diff, 6)
-    payload["vulkan_cpu_rel_diff"] = round(rel_diff, 6)
-    payload["vulkan_non_finite"] = non_finite
-    # 1% of the output range: comfortably above fp16 noise, far below a broken kernel.
-    payload["vulkan_matches_cpu"] = bool(non_finite == 0 and rel_diff < 0.01)
+    # fp16 is what a Vulkan deployment actually uses, so time it and report how
+    # far it drifts from CPU -- but judge correctness on the fp32 path, because
+    # fp16 rounding alone can move a YOLO head by several percent.
+    fp16_mats, fp16_ms = forward(ncnn, param, binary, args.device, args.imgsz, True, 3, fp16=True)
+    fp32_mats, fp32_ms = forward(ncnn, param, binary, args.device, args.imgsz, True, 3, fp16=False)
 
+    payload = {
+        "output_shapes": [list(m.shape) for m in fp16_mats],
+        "timing": {
+            "vulkan_ms_median": round(fp16_ms, 2),
+            "vulkan_fp32_ms_median": round(fp32_ms, 2),
+            "cpu_ms_median": round(cpu_ms, 2),
+        },
+    }
+
+    def compare(a_mats, b_mats):
+        """max abs/relative difference plus a non-finite count."""
+        max_diff = 0.0
+        scale = 1e-9
+        non_finite = 0
+        for a, b in zip(a_mats, b_mats):
+            if a.shape != b.shape:
+                raise RuntimeError(f"Vulkan output shape {a.shape} != CPU output shape {b.shape}")
+            if not a.size:
+                continue
+            a64 = a.astype(np.float64)
+            b64 = b.astype(np.float64)
+            non_finite += int(np.count_nonzero(~np.isfinite(a64)))
+            max_diff = max(max_diff, float(np.max(np.abs(a64 - b64))))
+            scale = max(scale, float(np.max(np.abs(b64))))
+        return max_diff, max_diff / scale, non_finite
+
+    fp16_abs, fp16_rel, fp16_nonfin = compare(fp16_mats, cpu_mats)
+    fp32_abs, fp32_rel, fp32_nonfin = compare(fp32_mats, cpu_mats)
+
+    payload["fp16_max_abs_diff"] = round(fp16_abs, 6)
+    payload["fp16_rel_diff"] = round(fp16_rel, 6)
+    payload["fp32_max_abs_diff"] = round(fp32_abs, 6)
+    payload["fp32_rel_diff"] = round(fp32_rel, 6)
+    payload["non_finite"] = fp16_nonfin + fp32_nonfin
+    # A correct Vulkan kernel matches CPU closely in fp32.  0.1% is far above
+    # float rounding and far below what a broken kernel produces (we measured
+    # ~1-7% drift for fp16, and hard failures for real bugs).
+    payload["vulkan_matches_cpu"] = bool(payload["non_finite"] == 0 and fp32_rel < 0.001)
     Path(args.child_out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     # Flush and skip teardown: the payload is on disk and ncnn may segfault
     # while destroying the Vulkan device.
@@ -353,17 +390,19 @@ def main() -> int:
         payload = run_inference_subprocess(param, binary, device_index, size)
         rec.data.update(payload)
         if not payload.get("vulkan_matches_cpu"):
-            if payload.get("vulkan_non_finite"):
-                raise RuntimeError(f"Vulkan output has {payload['vulkan_non_finite']} non-finite value(s)")
+            if payload.get("non_finite"):
+                raise RuntimeError(f"Vulkan output has {payload['non_finite']} non-finite value(s)")
             raise RuntimeError(
-                f"Vulkan output diverges from CPU "
-                f"(rel {payload.get('vulkan_cpu_rel_diff')}, abs {payload.get('vulkan_cpu_max_abs_diff')})"
+                f"Vulkan fp32 output diverges from CPU "
+                f"(rel {payload.get('fp32_rel_diff')}, abs {payload.get('fp32_max_abs_diff')})"
             )
         rec.stage_ok("inference", time.time() - start)
         rec.log(
             f"inference ok: shapes={payload['output_shapes']} "
-            f"vk={payload['timing']['vulkan_ms_median']}ms cpu={payload['timing']['cpu_ms_median']}ms "
-            f"rel_diff={payload['vulkan_cpu_rel_diff']}"
+            f"vk(fp16)={payload['timing']['vulkan_ms_median']}ms "
+            f"vk(fp32)={payload['timing']['vulkan_fp32_ms_median']}ms "
+            f"cpu={payload['timing']['cpu_ms_median']}ms "
+            f"fp32_rel={payload['fp32_rel_diff']} fp16_rel={payload['fp16_rel_diff']}"
         )
     except BaseException as exc:
         rec.stage_fail("inference", exc, time.time() - start)

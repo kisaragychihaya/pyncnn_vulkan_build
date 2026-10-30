@@ -107,18 +107,34 @@ def render(rows: list[dict]) -> str:
     out.append("## 模型兼容性矩阵")
     out.append("")
     out.append("`export` = ultralytics 导出 ncnn，`load` = pyncnn 加载 param/bin，")
-    out.append("`vulkan` = 网络真正绑定到 Vulkan 设备（未回退 CPU），`inference` = 推理且与 CPU 结果一致。")
+    out.append("`vulkan` = 网络真正绑定到 Vulkan 设备（未回退 CPU），")
+    out.append("`inference` = 推理成功，且 **fp32** 的 Vulkan 结果与 CPU 相对误差 < 0.1%。")
     out.append("")
-    out.append("| 模型 | 平台 | 导出 | 加载 | Vulkan | 推理 | param (MB) | Vulkan ms | CPU ms | 失败阶段 | 备注 |")
-    out.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    out.append("> `fp16 rel` 是 Vulkan 默认 fp16 kernel 相对 CPU 的偏差，仅作参考：")
+    out.append("> fp16 本身的舍入就会带来百分之几的差异，不代表 kernel 有 bug。")
+    out.append("> 判定用的是关掉 fp16 后的 fp32 对比。")
+    out.append("")
+    out.append(
+        "| 模型 | 平台 | 导出 | 加载 | Vulkan | 推理 | param (MB) "
+        "| Vulkan fp16 ms | Vulkan fp32 ms | CPU ms | fp32 rel | fp16 rel | 失败阶段 | 备注 |"
+    )
+    out.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for row in sorted(rows, key=lambda r: (r["model"], platform_label(r))):
         timing = row.get("timing") or {}
+
+        def num(key):
+            value = row.get(key)
+            return "-" if value is None else value
+
         out.append(
             f"| `{escape(row['model'])}` | {escape(platform_label(row))} "
             f"| {stage_cell(row, 'export')} | {stage_cell(row, 'load')} "
             f"| {stage_cell(row, 'vulkan')} | {stage_cell(row, 'inference')} "
             f"| {row.get('params_mb') if row.get('params_mb') is not None else '-'} "
-            f"| {timing.get('vulkan_ms_median', '-')} | {timing.get('cpu_ms_median', '-')} "
+            f"| {timing.get('vulkan_ms_median', '-')} "
+            f"| {timing.get('vulkan_fp32_ms_median', '-')} "
+            f"| {timing.get('cpu_ms_median', '-')} "
+            f"| {num('fp32_rel_diff')} | {num('fp16_rel_diff')} "
             f"| {escape(row.get('failed_stage') or '-')} | {escape(short_error(row))} |"
         )
     out.append("")
