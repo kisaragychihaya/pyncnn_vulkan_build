@@ -39,8 +39,8 @@ permissions:
 env:
   ULTRALYTICS_SPEC: ${{ inputs.ultralytics_spec || 'ultralytics' }}
   PNNX_SPEC: ${{ inputs.pnnx_spec || 'pnnx==20260526' }}
-  # lavapipe: software Vulkan, since hosted runners have no GPU
-  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  # VK_ICD_FILENAMES is set by the install step: Mesa renamed lavapipe's ICD
+  # from lvp_icd.x86_64.json to lvp_icd.json, so hardcoding a path breaks.
   YOLO_CONFIG_DIR: ${{ github.workspace }}/.ultralytics
   # cp312 manylinux wheel from the pyncnn-vulkan-build run
   WHEEL_GLOB: 'ncnn-*-cp312-cp312-manylinux*x86_64.whl'
@@ -91,10 +91,23 @@ jobs:
 
     - name: Install Vulkan (lavapipe software driver)
       run: |
+        set -euo pipefail
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           libvulkan1 mesa-vulkan-drivers vulkan-tools
-        ls -l /usr/share/vulkan/icd.d/ || true
+        echo "--- available ICDs ---"
+        ls -l /usr/share/vulkan/icd.d/
+
+        # Pick lavapipe by content, not by filename: Mesa has already renamed it
+        # once (lvp_icd.x86_64.json -> lvp_icd.json) and may do so again.
+        icd=$(grep -lis 'lvp\|lavapipe' /usr/share/vulkan/icd.d/*.json | head -1 || true)
+        if [ -z "$icd" ]; then
+          echo "::error::no lavapipe ICD found under /usr/share/vulkan/icd.d"
+          exit 1
+        fi
+        echo "using ICD $icd"
+        cat "$icd"
+        echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
     - name: Extract the one wheel the matrix needs
       run: |
@@ -206,8 +219,17 @@ jobs:
 
     - name: Install Vulkan (lavapipe software driver)
       run: |
+        set -euo pipefail
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+        # same discovery as the smoke job: match the ICD by content
+        icd=$(grep -lis 'lvp\|lavapipe' /usr/share/vulkan/icd.d/*.json | head -1 || true)
+        if [ -z "$icd" ]; then
+          echo "::error::no lavapipe ICD found under /usr/share/vulkan/icd.d"
+          exit 1
+        fi
+        echo "using ICD $icd"
+        echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
     - name: Install repo-built pyncnn + test deps
       run: |
