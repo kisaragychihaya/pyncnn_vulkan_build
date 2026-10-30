@@ -1,0 +1,267 @@
+name: model-compat
+
+# Check whether the latest ultralytics models still export to ncnn and run on
+# *this repo's* pyncnn (Vulkan shared build) — not the PyPI ncnn wheel.
+#
+# n-size weights only.  One job per model, then a markdown report.
+#
+# Runners have no GPU and no Vulkan driver, so Vulkan is provided by Mesa's
+# lavapipe (a software implementation).  That still exercises the real ncnn
+# Vulkan path: shader compilation, buffer/image allocation, kernel dispatch.
+#
+# Linux only on purpose: Windows runners would need the lavapipe Vulkan SDK
+# glued in by hand, and a machine with mixed vendor drivers can crash inside
+# the Vulkan loader on shutdown, which has nothing to do with the model.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ncnn_run_id:
+        description: 'Run id of pyncnn-vulkan-build to test (empty = latest successful)'
+        required: false
+        default: ''
+      ultralytics_spec:
+        description: pip spec for ultralytics
+        required: false
+        default: ultralytics
+      pnnx_spec:
+        description: pip spec for pnnx (keep in sync with what ultralytics pins)
+        required: false
+        default: pnnx==20260526
+  schedule:
+    # weekly drift check, Monday 03:17 UTC
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  ULTRALYTICS_SPEC: ${{ inputs.ultralytics_spec || 'ultralytics' }}
+  PNNX_SPEC: ${{ inputs.pnnx_spec || 'pnnx==20260526' }}
+  # lavapipe: software Vulkan, since hosted runners have no GPU
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  YOLO_CONFIG_DIR: ${{ github.workspace }}/.ultralytics
+  # cp312 manylinux wheel from the pyncnn-vulkan-build run
+  WHEEL_GLOB: 'ncnn-*-cp312-cp312-manylinux*x86_64.whl'
+
+jobs:
+  # GATE: prove lavapipe works and a Vulkan device is really visible before
+  # spending runner time on 18 models.  Without this, a silent CPU fallback
+  # would produce a green report that validates nothing.
+  smoke:
+    name: smoke yolov8n vulkan
+    runs-on: ubuntu-24.04
+    outputs:
+      ncnn_run_id: ${{ steps.pick.outputs.run_id }}
+    steps:
+    - uses: actions/checkout@v4
+
+    # Resolve which pyncnn build to test, then fetch just its linux wheels.
+    - name: Pick pyncnn-vulkan-build run
+      id: pick
+      env:
+        INPUT_RUN_ID: ${{ inputs.ncnn_run_id }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        run_id="${INPUT_RUN_ID:-}"
+        if [ -z "$run_id" ]; then
+          run_id=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/build.yml/runs?status=success&per_page=1" \
+            --jq '.workflow_runs[0].id')
+        fi
+        if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+          echo "::error::no successful pyncnn-vulkan-build run found; pass ncnn_run_id"
+          exit 1
+        fi
+        echo "testing pyncnn from run $run_id"
+        echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: wheels-linux-amd64
+        path: dist
+        run-id: ${{ steps.pick.outputs.run_id }}
+        github-token: ${{ github.token }}
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Vulkan (lavapipe software driver)
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y --no-install-recommends \
+          libvulkan1 mesa-vulkan-drivers vulkan-tools
+        ls -l /usr/share/vulkan/icd.d/ || true
+
+    - name: Extract the one wheel the matrix needs
+      run: |
+        set -euo pipefail
+        mkdir -p wheel
+        wheel=$(ls dist/${{ env.WHEEL_GLOB }} | head -1)
+        cp "$wheel" wheel/
+        ls -lh wheel
+
+    # 195 MB of linux wheels would be re-downloaded by every matrix job; share
+    # the single cp312 wheel instead.
+    - uses: actions/upload-artifact@v4
+      with:
+        name: pyncnn-wheel-cp312
+        path: wheel/*.whl
+
+    - name: Install repo-built pyncnn + test deps
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install wheel/*.whl
+        python -m pip install "$ULTRALYTICS_SPEC" "$PNNX_SPEC"
+        python -c "import ncnn, ultralytics, pnnx; print('ncnn', ncnn.__version__); print('ultralytics', ultralytics.__version__); print('pnnx', pnnx.__version__)"
+
+    - name: Assert lavapipe is actually loaded
+      run: |
+        vulkaninfo --summary || true
+        python - <<'PY'
+        import sys
+        import ncnn
+        count = ncnn.get_gpu_count()
+        print(f"ncnn sees {count} Vulkan device(s)")
+        for i in range(count):
+            print(" ", i, ncnn.get_gpu_info(i).device_name())
+        if count < 1:
+            sys.exit("no Vulkan device: lavapipe is not loaded, refusing to run the matrix")
+        PY
+
+    # A crash in this step means the gate is not open, so let it fail loudly.
+    - name: Smoke test yolov8n (export + Vulkan inference)
+      run: |
+        python tools/model_compat.py --model yolov8n.pt \
+          --out results/smoke-yolov8n.json --workdir work
+        python - <<'PY'
+        import json, sys
+        d = json.load(open("results/smoke-yolov8n.json"))
+        print("ok=", d["ok"], "stages=", {k: v["ok"] for k, v in d["stages"].items()})
+        if not d["ok"]:
+            sys.exit(f"smoke failed at stage {d['failed_stage']}: {d['error']}")
+        PY
+
+    - name: Show smoke result
+      if: always()
+      run: cat results/smoke-yolov8n.json || true
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        # deliberately NOT "compat-*": the report job globs that pattern and
+        # would otherwise count the smoke run twice
+        name: smoke-yolov8n
+        path: results/smoke-yolov8n.json
+        if-no-files-found: warn
+
+  compat:
+    name: compat ${{ matrix.model }}
+    needs: [smoke]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        model:
+          # yolov8
+          - yolov8n.pt
+          - yolov8n-seg.pt
+          - yolov8n-pose.pt
+          - yolov8n-obb.pt
+          - yolov8n-cls.pt
+          # yolov9 has no "n"; yolov9t is the smallest
+          - yolov9t.pt
+          # yolov10
+          - yolov10n.pt
+          # yolo11
+          - yolo11n.pt
+          - yolo11n-seg.pt
+          - yolo11n-pose.pt
+          - yolo11n-obb.pt
+          - yolo11n-cls.pt
+          # yolo12
+          - yolo12n.pt
+          # yolo26
+          - yolo26n.pt
+          - yolo26n-seg.pt
+          - yolo26n-pose.pt
+          - yolo26n-obb.pt
+          - yolo26n-cls.pt
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: pyncnn-wheel-cp312
+        path: wheel
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Vulkan (lavapipe software driver)
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+
+    - name: Install repo-built pyncnn + test deps
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install wheel/*.whl
+        python -m pip install "$ULTRALYTICS_SPEC" "$PNNX_SPEC"
+
+    # A failure here is data, not a broken CI: the script always writes its
+    # json, so the report still gets a row.  Only an unwritable result is fatal.
+    - name: Run compatibility test
+      run: |
+        python tools/model_compat.py --model "${{ matrix.model }}" \
+          --out "results/${{ matrix.model }}.json" --workdir work || true
+        test -f "results/${{ matrix.model }}.json"
+
+    - name: Show result
+      if: always()
+      run: cat "results/${{ matrix.model }}.json" || true
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: compat-${{ matrix.model }}
+        path: results/${{ matrix.model }}.json
+        if-no-files-found: warn
+
+  report:
+    name: markdown report
+    needs: [compat]
+    if: always() && needs.smoke.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        path: results
+        pattern: compat-*
+        merge-multiple: true
+
+    - name: List collected results
+      run: ls -l results
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Build report
+      run: |
+        python tools/model_compat_report.py --results results --out model-compat-report.md
+        cat model-compat-report.md >> "$GITHUB_STEP_SUMMARY"
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: model-compat-report
+        path: model-compat-report.md
